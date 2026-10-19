@@ -50,16 +50,17 @@ jobs:
           echo "Extracted contents:"
           find extracted -maxdepth 3 | head -40
 
-          # Find project root (folder that contains settings.gradle or settings.gradle.kts)
-          PROJECT_ROOT=$(find extracted -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) -printf '%h\n' | head -n 1 || true)
+          # Find project root
+          PROJECT_ROOT=""
+          if [ -f extracted/settings.gradle ] || [ -f extracted/settings.gradle.kts ]; then
+            PROJECT_ROOT="extracted"
+          else
+            PROJECT_ROOT=$(find extracted -name "settings.gradle" -o -name "settings.gradle.kts" | head -n 1 | xargs dirname || true)
+          fi
 
           if [ -z "$PROJECT_ROOT" ]; then
-            if [ -f extracted/settings.gradle ] || [ -f extracted/settings.gradle.kts ]; then
-              PROJECT_ROOT="extracted"
-            else
-              echo "::error::No settings.gradle / settings.gradle.kts found after extraction"
-              exit 1
-            fi
+            echo "::error::No settings.gradle or settings.gradle.kts found after extraction"
+            exit 1
           fi
 
           echo "Project root: $PROJECT_ROOT"
@@ -100,24 +101,28 @@ jobs:
           mkdir -p dist
 
           PROJECT_ROOT="${{ steps.zip.outputs.project_root }}"
+          echo "Looking for APK under: $PROJECT_ROOT"
 
-          # Find any release APK
-          APK_PATH=$(find "$PROJECT_ROOT" -path "*/outputs/apk/release/*.apk" | head -n 1 || true)
+          # Safer way to find the APK
+          APK_PATH=$(find "$PROJECT_ROOT" -type f -name "*.apk" | grep "/release/" | head -n 1 || true)
 
           if [ -z "$APK_PATH" ]; then
             echo "::error::No release APK found"
-            echo "Looking for any APK..."
-            find "$PROJECT_ROOT" -name "*.apk" || true
+            echo "All APK files found:"
+            find "$PROJECT_ROOT" -type f -name "*.apk" || true
             exit 1
           fi
 
           echo "Found APK: $APK_PATH"
-          cp "\( APK_PATH" "dist/TermuxWeb-build \){{ github.run_number }}.apk"
 
-          # Verify signature (best effort)
-          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          if [ -x "$BUILD_TOOLS/apksigner" ]; then
-            "\( BUILD_TOOLS/apksigner" verify --print-certs "dist/TermuxWeb-build \){{ github.run_number }}.apk" | head -5 || true
+          DEST="dist/TermuxWeb-build${{ github.run_number }}.apk"
+          cp "$APK_PATH" "$DEST"
+          echo "Copied to $DEST"
+
+          # Optional signature check
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)
+          if [ -n "$BUILD_TOOLS" ] && [ -x "$BUILD_TOOLS/apksigner" ]; then
+            "$BUILD_TOOLS/apksigner" verify --print-certs "$DEST" | head -5 || true
           fi
 
           ls -lh dist/
@@ -135,4 +140,3 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.apk
-        
