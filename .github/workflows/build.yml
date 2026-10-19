@@ -29,7 +29,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Gradle (with caching)
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       # Optional: sign with your own key so every build can update the previous one.
@@ -52,6 +52,12 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
+          # Generate Gradle Wrapper if it is missing
+          if [ ! -f gradlew ]; then
+            echo "gradlew not found – generating Gradle Wrapper..."
+            gradle wrapper --gradle-version 8.7
+          fi
+
           chmod +x gradlew
           ./gradlew --no-daemon --stacktrace assembleRelease
 
@@ -76,3 +82,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.apk
+        
