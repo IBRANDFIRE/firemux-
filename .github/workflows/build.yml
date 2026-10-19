@@ -7,7 +7,6 @@ on:
   pull_request:
   workflow_dispatch:
 
-# contents: write is only needed to attach the APK to a GitHub Release when you push a tag like v1.0
 permissions:
   contents: write
 
@@ -32,8 +31,45 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # Optional: sign with your own key so every build can update the previous one.
-      # Without the KEYSTORE_BASE64 secret the APK is signed with a throwaway debug key.
+      - name: Find and extract any ZIP file
+        id: zip
+        run: |
+          echo "Searching for ZIP files in the repository..."
+          ZIP_FILE=$(find . -type f -name "*.zip" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "::error::No ZIP file found in the repository!"
+            echo "Please upload a .zip file that contains the Android project (with settings.gradle / build.gradle)."
+            exit 1
+          fi
+
+          echo "Found ZIP: $ZIP_FILE"
+          echo "zip_file=$ZIP_FILE" >> $GITHUB_OUTPUT
+
+          # Create extraction directory
+          mkdir -p extracted
+          unzip -q "$ZIP_FILE" -d extracted
+
+          echo "Extracted contents:"
+          find extracted -maxdepth 3 -type f | head -30
+
+          # Try to find the real project root (where settings.gradle lives)
+          PROJECT_ROOT=$(find extracted -type f \( -name "settings.gradle" -o -name "settings.gradle.kts" \) | head -n 1 | xargs dirname)
+
+          if [ -z "$PROJECT_ROOT" ]; then
+            # Fallback: maybe the zip root itself is the project
+            if [ -f "extracted/settings.gradle" ] || [ -f "extracted/settings.gradle.kts" ]; then
+              PROJECT_ROOT="extracted"
+            else
+              echo "::error::No settings.gradle or settings.gradle.kts found after extracting the ZIP."
+              echo "The ZIP must contain a valid Android project."
+              exit 1
+            fi
+          fi
+
+          echo "Project root detected: $PROJECT_ROOT"
+          echo "project_root=$PROJECT_ROOT" >> $GITHUB_OUTPUT
+
       - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -43,7 +79,7 @@ jobs:
             echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
             echo "Using your release keystore."
           else
-            echo "::warning::No KEYSTORE_BASE64 secret. Building with the debug key (each build gets a different signature, so you must uninstall before updating)."
+            echo "::warning::No KEYSTORE_BASE64 secret. Building with the debug key."
           fi
 
       - name: Build release APK
@@ -52,7 +88,9 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          # Generate Gradle Wrapper if it is missing
+          cd "${{ steps.zip.outputs.project_root }}"
+
+          # Generate Gradle Wrapper if missing
           if [ ! -f gradlew ]; then
             echo "gradlew not found – generating Gradle Wrapper..."
             gradle wrapper --gradle-version 8.7
@@ -64,10 +102,21 @@ jobs:
       - name: Name and verify the APK
         run: |
           mkdir -p dist
-          cp app/build/outputs/apk/release/app-release.apk "dist/TermuxWeb-build${{ github.run_number }}.apk"
+
+          # Find the generated APK
+          APK_PATH=\( (find " \){{ steps.zip.outputs.project_root }}" -path "*/outputs/apk/release/*.apk" | head -n 1)
+
+          if [ -z "$APK_PATH" ]; then
+            echo "::error::No release APK found after build!"
+            find "${{ steps.zip.outputs.project_root }}" -name "*.apk" || true
+            exit 1
+          fi
+
+          cp "\( APK_PATH" "dist/TermuxWeb-build \){{ github.run_number }}.apk"
+
           APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner"
           "$APKSIGNER" verify --print-certs dist/*.apk | head -3 || true
-          ls -l dist
+          ls -lh dist
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
